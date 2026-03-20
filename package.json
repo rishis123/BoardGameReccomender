@@ -1,0 +1,18 @@
+{
+  "name": "flavormatrix",
+  "version": "1.0.0",
+  "description": "Molecular Gastronomy IR & Generative Dashboard – CS/INFO 4300",
+  "scripts": {
+    "install-all": "pip install -r requirements.txt && cd frontend && npm install",
+    "dev": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "start": "python src/app.py",
+    "prepare-data": "python scripts/download_datasets.py && python scripts/build_duckdb.py && python scripts/build_indices.py"
+  },
+  "keywords": [
+    "flask",
+    "react",
+    "molecular-gastronomy",
+    "information-retrieval"
+  ]
+}

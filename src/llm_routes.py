@@ -1,52 +1,29 @@
 """
-LLM chat route — only loaded when USE_LLM = True in routes.py.
-Adds a POST /chat endpoint that performs LLM-driven RAG.
+LLM chat route – FlavorMatrix RAG pipeline.
+
+Adds a POST /api/chat endpoint that performs grounded generation using
+molecular profiles and recipe data retrieved from the FlavorMatrix corpus.
 
 Setup:
   1. Add API_KEY=your_key to .env
-  2. Set USE_LLM = True in routes.py
+  2. Set USE_LLM = True in routes.py (default)
 """
+
 import json
 import os
-import re
 import logging
 from flask import request, jsonify, Response, stream_with_context
 from infosci_spark_client import LLMClient
 
+from services.rag import gather_context, build_grounded_prompt
+
 logger = logging.getLogger(__name__)
 
 
-def llm_search_decision(client, user_message):
-    """Ask the LLM whether to search the DB and which word to use."""
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You have access to a database of Keeping Up with the Kardashians episode titles, "
-                "descriptions, and IMDB ratings. Search is by a single word in the episode title. "
-                "Reply with exactly: YES followed by one space and ONE word to search (e.g. YES wedding), "
-                "or NO if the question does not need episode data."
-            ),
-        },
-        {"role": "user", "content": user_message},
-    ]
-    response = client.chat(messages)
-    content = (response.get("content") or "").strip().upper()
-    logger.info(f"LLM search decision: {content}")
-    if re.search(r"\bNO\b", content) and not re.search(r"\bYES\b", content):
-        return False, None
-    yes_match = re.search(r"\bYES\s+(\w+)", content)
-    if yes_match:
-        return True, yes_match.group(1).lower()
-    if re.search(r"\bYES\b", content):
-        return True, "Kardashian"
-    return False, None
+def register_chat_route(app):
+    """Register the /api/chat SSE endpoint."""
 
-
-def register_chat_route(app, json_search):
-    """Register the /chat SSE endpoint. Called from routes.py."""
-
-    @app.route("/chat", methods=["POST"])
+    @app.route("/api/chat", methods=["POST"])
     def chat():
         data = request.get_json() or {}
         user_message = (data.get("message") or "").strip()
@@ -57,28 +34,24 @@ def register_chat_route(app, json_search):
         if not api_key:
             return jsonify({"error": "API_KEY not set — add it to your .env file"}), 500
 
-        client = LLMClient(api_key=api_key)
-        use_search, search_term = llm_search_decision(client, user_message)
+        store = app.config.get("INDEX_STORE")
+        db_path = app.config.get("DB_PATH")
 
-        if use_search:
-            episodes = json.loads(json_search(search_term or "Kardashian"))
-            context_text = "\n\n---\n\n".join(
-                f"Title: {ep['title']}\nDescription: {ep['descr']}\nIMDB Rating: {ep['imdb_rating']}"
-                for ep in episodes
-            ) or "No matching episodes found."
-            messages = [
-                {"role": "system", "content": "Answer questions about Keeping Up with the Kardashians using only the episode information provided."},
-                {"role": "user", "content": f"Episode information:\n\n{context_text}\n\nUser question: {user_message}"},
-            ]
-        else:
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant for Keeping Up with the Kardashians questions."},
-                {"role": "user", "content": user_message},
-            ]
+        # Gather molecular + recipe context for RAG
+        molecular_ctx = ""
+        recipe_ctx = ""
+        citations: list[str] = []
+        if store and db_path:
+            molecular_ctx, recipe_ctx, citations = gather_context(
+                store, db_path, user_message
+            )
+
+        messages = build_grounded_prompt(user_message, molecular_ctx, recipe_ctx)
+        client = LLMClient(api_key=api_key)
 
         def generate():
-            if use_search and search_term:
-                yield f"data: {json.dumps({'search_term': search_term})}\n\n"
+            if citations:
+                yield f"data: {json.dumps({'citations': citations})}\n\n"
             try:
                 for chunk in client.chat(messages, stream=True):
                     if chunk.get("content"):
@@ -88,9 +61,7 @@ def register_chat_route(app, json_search):
                 yield f"data: {json.dumps({'error': 'Streaming error occurred'})}\n\n"
 
         return Response(
-            # Stream the response to the client ("stream_with_context" is from Flask)
             stream_with_context(generate()),
             mimetype="text/event-stream",
-            # Set this to prevent the browser from caching the response
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

@@ -1,186 +1,170 @@
-# 4300 Flask Template
+# FlavorMatrix
 
-## Contents
+A molecular gastronomy information retrieval and generative dashboard built with **Flask + React + TypeScript**.
 
-- [Summary](#summary)
-- [Quick Start](#quick-start)
-- [Architecture](#architecture)
-- [Deploying on the Server](#deploying-on-the-server)
-- [Running Locally](#running-locally)
-- [Troubleshooting Deployment Issues](#troubleshooting-deployment-issues)
-- [Virtual Environments and Dependency Tracking](#virtual-environments-and-dependency-tracking)
-- [Additional Resources](#additional-resources)
-- [Feedback and Support](#feedback-and-support)
+FlavorMatrix helps chefs and food enthusiasts discover ingredient substitutions, explore flavor networks, and understand the molecular science behind great pairings.
 
-## Summary
+## Features
 
-This is a **Flask** template for **CS/INFO 4300 class at Cornell University**
-
-This template provides:
-- **Backend**: Flask with SQLite database and SQLAlchemy ORM
-- **Frontend**: Server-rendered HTML templates with static assets
-
-You will use this template to directly deploy your Flask code on the project server.
-
-After you follow the steps below, you should have set up a public address dedicated to your team's project. For the moment, a template app will be running. In future milestones you will be updating the code to replace that template with your very own app.
-
-
-## Quick Start
-
-For the fastest way to get started with development:
-
-### Windows
-```bash
-# 1. Set up Python virtual environment
-python -m venv venv
-venv\Scripts\activate
-
-# 2. Install Python dependencies
-pip install -r requirements.txt
-
-# 3. Start Flask
-python src/app.py
-```
-
-### Mac/Linux
-```bash
-# 1. Set up Python virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# 2. Install Python dependencies
-pip install -r requirements.txt
-
-# 3. Start Flask
-python src/app.py
-```
-
-Then open `http://localhost:5001` in your browser!
+| Module | Description |
+|--------|-------------|
+| **Substitution Engine** | TF-IDF cosine similarity over molecular profiles to find ingredient replacements |
+| **Flavor Universe** | PMI-based association graph revealing non-obvious ingredient connections |
+| **Sensory Map** | 3D SVD projection of ingredients into latent flavor dimensions |
+| **AI Flavor Chemist** | RAG-powered chat grounded in FlavorDB and RecipeNLG data |
 
 ## Architecture
 
 ```
-4300-Flask-Template/
+RecallRadar/
+├── scripts/
+│   ├── download_datasets.py   # Fetch FlavorDB, TasteTrios, RecipeNLG
+│   ├── build_duckdb.py        # Normalise raw data → DuckDB
+│   └── build_indices.py       # Pre-compute TF-IDF, PMI, SVD artifacts
 ├── src/
-│   ├── app.py          # Flask app entry point
-│   ├── models.py       # SQLAlchemy database models
-│   ├── routes.py       # Search routes (+ USE_LLM toggle)
-│   ├── llm_routes.py   # LLM chat route (only used when USE_LLM = True)
-│   ├── init.json       # Seed data
-│   ├── static/         # CSS, images
-│   └── templates/
-│       ├── base.html   # Simple search page
-│       └── chat.html   # Search + AI chat page (USE_LLM = True)
+│   ├── app.py                 # Flask entry point
+│   ├── models.py              # SQLAlchemy models (feedback, metrics)
+│   ├── routes.py              # All /api/* endpoints
+│   ├── llm_routes.py          # RAG chat streaming endpoint
+│   └── services/
+│       ├── index_store.py     # Artifact loader (singleton)
+│       ├── ir.py              # TF-IDF cosine search + Precision@k
+│       ├── pmi.py             # PMI graph generation
+│       ├── svd.py             # Truncated SVD projections
+│       ├── chunking.py        # Text chunking for RAG
+│       └── rag.py             # Retrieval + prompt grounding
+├── frontend/
+│   └── src/
+│       ├── App.tsx            # Dashboard shell with sidebar + views
+│       ├── Chat.tsx           # AI Flavor Chemist drawer
+│       └── components/
+│           ├── SubstitutionEngine.tsx
+│           ├── SubstitutionCard.tsx
+│           ├── FlavorNetwork.tsx
+│           ├── SensoryMap3D.tsx
+│           ├── IngredientProfileTable.tsx
+│           └── FeedbackPanel.tsx
+├── data/                      # Generated (not committed)
+│   ├── raw/                   # Downloaded dataset files
+│   ├── flavormatrix.duckdb    # Canonical database
+│   └── artifacts/             # Pre-computed matrices and indices
 ├── requirements.txt
 ├── Dockerfile
-└── .env                # API_KEY goes here (not committed)
+└── .env                       # API_KEY (not committed)
 ```
 
-- **Database**: SQLite with SQLAlchemy ORM
+## Quick Start
 
-## Deploying on the server
+### 1. Set up Python environment
 
-For the initial deployment, only one member of your team needs to follow the steps below.
+```bash
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# Mac/Linux:
+source venv/bin/activate
 
-### Step 0: Fork this template
+pip install -r requirements.txt
+```
 
-- **Fork** this repository on your GitHub account
-- Make sure your repository is set to **PUBLIC** (required for deployment)
-- Keep in mind that other students may be able to see your repository
+### 2. Download and prepare data
 
-### Step 1: Login to the deployment dashboard
+```bash
+# Download datasets (FlavorDB via API, others via Kaggle)
+python scripts/download_datasets.py
 
-- Login to the dashboard at https://4300showcase.infosci.cornell.edu/login using the Google account associated with your Cornell Email/NetID. Click the "INFO 4300: Language Information" **Spring 2026** course in the list of course offerings.
+# Build the DuckDB database
+python scripts/build_duckdb.py
 
-![Project Server Home](assets/server-home.png)
+# Pre-compute TF-IDF, PMI, SVD artifacts
+python scripts/build_indices.py
+```
 
-### Step 2: Navigate to Your Team Dashboard
+> **Note:** FlavorDB is scraped from the public API at cosylab.iiitd.edu.in/flavordb.
+> TasteTrios and RecipeNLG require `kagglehub` (`pip install kagglehub`) or manual download.
 
-- You'll see a list of all teams in the course
-- Find your team and click **"Dashboard"** to go to your team's deployment dashboard
+### 3. Configure environment
 
-![Teams Page For a Course](assets/teams.png)
+```bash
+cp .env.example .env
+# Edit .env and add your API_KEY for the LLM chat feature
+```
 
-### Step 3: Deploy Your Project
+### 4. Start the app
 
-You'll see your team's dashboard that looks like this:
+**Terminal 1 — Flask backend:**
+```bash
+python src/app.py
+```
 
-![Team Dashboard](assets/dashboard-new.png)
+**Terminal 2 — React frontend (dev mode):**
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-1. **Add Your GitHub URL** — paste the URL of your forked (public) repository
-2. **Click "Deploy"** — this clones your code, builds the Docker container, and starts your app
-3. **Click "Open Project"** once the status updates to visit your live app
+Open `http://localhost:5173` in your browser.
 
-Expand **"Build Logs"** or **"Container Logs"** if something goes wrong.
+### Production build
 
-#### Redeploying After Updates
+```bash
+cd frontend && npm install && npm run build && cd ..
+python src/app.py
+```
 
-Push changes to GitHub, then click **"Deploy"** again.
+Open `http://localhost:5001`.
 
-## Running locally
+## API Endpoints
 
-### Prerequisites
-- **Python 3.10 or above**
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/config` | Feature flags (`use_llm`) |
+| GET | `/api/ingredients/search?q=` | Autocomplete ingredient names |
+| GET | `/api/substitutions?seed=&k=&category=` | Molecular substitutes ranked by cosine similarity |
+| GET | `/api/network?ingredient=&min_pmi=&limit=` | PMI-based flavor network graph |
+| GET | `/api/sensory-map?dims=0,1,2&category=` | 3D SVD projection data |
+| GET | `/api/ingredient-profile?id=` | Full molecular profile for an ingredient |
+| GET | `/api/metrics` | Retrieval relevance and feedback metrics |
+| POST | `/api/feedback` | Submit +1/-1 rating (`{score, context_type, context_id}`) |
+| POST | `/api/chat` | RAG-grounded streaming chat (SSE) |
 
-### Setup and Run
+## Datasets
 
-1. Create and activate a virtual environment:
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate   # Windows: venv\Scripts\activate
-   ```
+| Dataset | Purpose | Source |
+|---------|---------|--------|
+| FlavorDB | 936 ingredients, 25k+ molecules | [cosylab.iiitd.edu.in/flavordb](https://cosylab.iiitd.edu.in/flavordb/) |
+| TasteTrios | Ingredient compatibility ground truth | Kaggle `mbsssb/tastetrios` |
+| RecipeNLG | Recipe text corpus for RAG | Kaggle `paultimothymooney/recipenlg` |
+| FOODPUZZLE | Flavor-science QA benchmark | Manual download |
 
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+## Deploying on the Server
 
-3. Run the app:
-   ```bash
-   python src/app.py
-   ```
+1. Run the data pipeline locally (steps 2 above) to generate `data/flavormatrix.duckdb` and `data/artifacts/`
+2. Push your code **and** the `data/` directory to GitHub
+3. Deploy via the [4300 Showcase Dashboard](https://4300showcase.infosci.cornell.edu/login)
 
-   Open `http://localhost:5001` in your browser.
+The Dockerfile copies `data/` into the container image, so artifacts persist across restarts.
 
-### Modifying the Data
+## Technical Details
 
-Edit `src/init.json` to replace the dummy episode data with your own. You can add additional data files as needed.
+### IR Module
+- Each ingredient is a "document"; its flavor molecules (PubChem IDs) are "terms"
+- TF uses augmented frequency: `0.5 + 0.5 * (count / max_count)`
+- IDF: `log(N / (1 + df))`
+- Retrieval ranked by cosine similarity of L2-normalised TF-IDF vectors
 
-## Troubleshooting Deployment Issues
+### Text Mining (PMI)
+- Co-occurrence defined by shared molecules between ingredient pairs
+- PMI: `log2(P(x,y) / (P(x) * P(y)))` with configurable threshold
 
-### My app isn't loading after deployment
-- Wait 30–60 seconds after deployment — larger apps need time to start up
-- Try refreshing your browser or clicking **"Open Project"** again
+### SVD Explainability
+- Truncated SVD (k=20) on the TF-IDF ingredient-molecule matrix
+- Top-10 molecule loadings per dimension used for human-readable labels
+- 3D scatter plot via Plotly for interactive exploration
 
-### How do I see what went wrong?
-- **Build Logs** — errors during the Docker build (dependency issues, etc.)
-- **Container Logs** — runtime errors from your running application
-- Common causes:
-  - Missing packages in `requirements.txt`
-  - Malformed `src/init.json`
-
-### Login/Authentication Issues
-- If you get a 401 error, try logging out and back in with your Cornell email
-
-### Still Having Issues?
-Post on Ed Discussion with your team name, what you tried, and screenshots of error logs.
-
-## Virtual Environments and Dependency Tracking
-
-Keep your virtual environment out of git — it inflates repository size and will break deployment.
-
-1. Make sure `venv/` (or whatever you named it) is listed in `.gitignore`
-2. If you already committed it, untrack it with `git rm -r --cached venv/`
-3. When you install new packages, update `requirements.txt`:
-   ```bash
-   pip freeze > requirements.txt
-   ```
-
-## Additional Resources
-
-📋 **Known Issues Database**: https://docs.google.com/document/d/1sF2zsubii_SYJLfZN02UB9FvtH1iLmi9xd-X4wbpbo8
-
-## Feedback and Support
-
-- **Problems with deployment?** Post on Ed Discussion or email course staff
-- **Questions about the deployment system?** Course staff are happy to help!
+### RAG Pipeline
+- Recipe and metadata corpus chunked at ~512 words with 10% overlap
+- Sparse TF-IDF retrieval over chunks
+- Strict grounding prompt: "Answer ONLY using provided data; cite sources"
+- Streaming SSE responses with inline citation metadata

@@ -20,4 +20,19 @@ build/
 helpers/*
 json_template/
 
+# Node/React
+node_modules/
+frontend/dist/
+frontend/node_modules/
+package-lock.json
+
 .env
+
+# FlavorMatrix data (large files – rebuild locally)
+data/raw/
+data/flavormatrix.duckdb
+data/artifacts/*.npz
+data/artifacts/*.npy
+data/artifacts/*.json
+!data/.gitkeep
+!data/artifacts/.gitkeep

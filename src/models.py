@@ -2,22 +2,26 @@ from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
 
-# Define Episode model
-class Episode(db.Model):
-    __tablename__ = 'episodes'
-    id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(64), nullable=False)
-    descr = db.Column(db.String(1024), nullable=False)
-    
-    def __repr__(self):
-        return f'Episode {self.id}: {self.title}'
 
-# Define Review model
-class Review(db.Model):
-    __tablename__ = 'reviews'
-    id = db.Column(db.Integer, primary_key=True)
-    imdb_rating = db.Column(db.Float, nullable=False)
-    
-    def __repr__(self):
-        return f'Review {self.id}: {self.imdb_rating}'
+class Feedback(db.Model):
+    """User feedback (+1 / -1) on chat responses and substitution suggestions."""
+    __tablename__ = "feedback"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    context_type = db.Column(db.String(32), nullable=False)   # "chat" | "substitution"
+    context_id = db.Column(db.String(256), nullable=True)
+    score = db.Column(db.Integer, nullable=False)              # +1 or -1
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
 
+    def __repr__(self):
+        return f"Feedback({self.context_type}, {self.score})"
+
+
+class MetricsCache(db.Model):
+    """Cached evaluation metrics (precision@k, etc.)."""
+    __tablename__ = "metrics_cache"
+    key = db.Column(db.String(64), primary_key=True)
+    value = db.Column(db.Float, nullable=False)
+    updated_at = db.Column(db.DateTime, server_default=db.func.now())
+
+    def __repr__(self):
+        return f"Metric({self.key}={self.value})"
