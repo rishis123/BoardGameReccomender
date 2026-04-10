@@ -1,273 +1,234 @@
 """
-Pre-compute IR artifacts from the DuckDB database.
+Build board-game recommendation artifacts from data/database.sqlite.
 
-Produces data/artifacts/:
-  - tfidf_matrix.npz       (sparse TF-IDF ingredient×molecule matrix)
-  - tfidf_vocab.json        (molecule_id → column index mapping)
-  - ingredient_ids.json     (row index → ingredient_id mapping)
-  - ingredient_names.json   (ingredient_id → name mapping)
-  - ingredient_categories.json
-  - svd_components.npy      (V^T from TruncatedSVD)
-  - svd_embeddings.npy      (U·Σ projections for all ingredients)
-  - svd_explained.json      (explained-variance ratios)
-  - svd_top_molecules.json  (top molecules per latent dimension)
-  - pmi_edges.json          (pre-computed PMI edges)
-  - chunk_tfidf_matrix.npz  (sparse TF-IDF for recipe chunks – RAG)
-  - chunk_tfidf_vocab.json
-  - chunk_ids.json
+Artifacts written to data/artifacts/:
+  - tfidf_matrix.npz
+  - tfidf_vectorizer.pkl
+  - svd_model.pkl
+  - svd_embeddings.npy
+  - svd_components.npy
+  - svd_explained.json
+  - svd_top_terms.json
+  - game_ids.json
+  - games.json
 
 Usage:
-    python scripts/build_indices.py
+  python scripts/build_indices.py
 """
 
+from __future__ import annotations
+
+import html
 import json
-import math
+import pickle
+import re
+import sqlite3
 import sys
-from collections import defaultdict
 from pathlib import Path
 
-import duckdb
 import numpy as np
 from scipy import sparse
 from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import normalize
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = PROJECT_ROOT / "data" / "flavormatrix.duckdb"
+DB_PATH = PROJECT_ROOT / "data" / "database.sqlite"
 ART_DIR = PROJECT_ROOT / "data" / "artifacts"
 
-
-def _load_ingredient_molecules(con):
-    """Return {ingredient_id: [molecule_id, …]}, plus metadata dicts."""
-    rows = con.execute(
-        "SELECT ingredient_id, molecule_id FROM ingredient_molecules ORDER BY ingredient_id"
-    ).fetchall()
-
-    ing_mols: dict[int, list[int]] = defaultdict(list)
-    for iid, mid in rows:
-        ing_mols[iid].append(mid)
-
-    ing_rows = con.execute("SELECT id, name, category FROM ingredients").fetchall()
-    id2name = {r[0]: r[1] for r in ing_rows}
-    id2cat = {r[0]: (r[2] or "Unknown") for r in ing_rows}
-
-    mol_rows = con.execute("SELECT id, common_name FROM molecules").fetchall()
-    mid2name = {r[0]: r[1] for r in mol_rows}
-
-    return ing_mols, id2name, id2cat, mid2name
+RATINGS_THRESHOLD = 50
+MAX_FEATURES = 50000
+SVD_COMPONENTS = 80
 
 
-# ---------------------------------------------------------------------------
-# TF-IDF over molecules
-# ---------------------------------------------------------------------------
-
-def build_tfidf(ing_mols, id2name):
-    ingredient_ids = sorted(ing_mols.keys())
-    all_mol_ids = sorted({m for mols in ing_mols.values() for m in mols})
-    mol2col = {m: i for i, m in enumerate(all_mol_ids)}
-
-    n_ing = len(ingredient_ids)
-    n_mol = len(all_mol_ids)
-    print(f"  Building TF-IDF matrix: {n_ing} ingredients × {n_mol} molecules")
-
-    # Document frequency
-    df = np.zeros(n_mol)
-    for mols in ing_mols.values():
-        seen = set()
-        for m in mols:
-            c = mol2col[m]
-            if c not in seen:
-                df[c] += 1
-                seen.add(c)
-
-    idf = np.log((n_ing) / (1 + df))
-
-    rows, cols, data = [], [], []
-    for idx, iid in enumerate(ingredient_ids):
-        mols = ing_mols[iid]
-        tf_counts: dict[int, int] = defaultdict(int)
-        for m in mols:
-            tf_counts[mol2col[m]] += 1
-        max_tf = max(tf_counts.values()) if tf_counts else 1
-        for c, cnt in tf_counts.items():
-            tf = 0.5 + 0.5 * (cnt / max_tf)
-            rows.append(idx)
-            cols.append(c)
-            data.append(tf * idf[c])
-
-    mat = sparse.csr_matrix((data, (rows, cols)), shape=(n_ing, n_mol))
-    mat = normalize(mat, norm="l2", axis=1)
-
-    return mat, ingredient_ids, all_mol_ids, mol2col
+def clean_text(text: str | None) -> str:
+    if not text:
+        return ""
+    text = html.unescape(str(text))
+    text = text.replace("\\r", " ").replace("\\n", " ")
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\\s+", " ", text)
+    return text.strip()
 
 
-# ---------------------------------------------------------------------------
-# PMI
-# ---------------------------------------------------------------------------
-
-def build_pmi(ing_mols, mid2name, min_pmi: float = 1.0, max_edges: int = 5000):
-    ingredient_ids = sorted(ing_mols.keys())
-    n = len(ingredient_ids)
-    mol_to_ings: dict[int, set[int]] = defaultdict(set)
-    for iid, mols in ing_mols.items():
-        for m in mols:
-            mol_to_ings[m].add(iid)
-
-    # P(ingredient) = fraction of molecules it appears with
-    total_pairs = sum(len(mols) for mols in ing_mols.values())
-    p_ing: dict[int, float] = {}
-    for iid, mols in ing_mols.items():
-        p_ing[iid] = len(mols) / total_pairs
-
-    # Co-occurrence: two ingredients share a molecule
-    cooccur: dict[tuple[int, int], int] = defaultdict(int)
-    for mid, ings in mol_to_ings.items():
-        ings_list = sorted(ings)
-        for i in range(len(ings_list)):
-            for j in range(i + 1, len(ings_list)):
-                cooccur[(ings_list[i], ings_list[j])] += 1
-
-    total_cooccur = sum(cooccur.values()) or 1
-
-    edges = []
-    for (a, b), count in cooccur.items():
-        p_ab = count / total_cooccur
-        p_a = p_ing.get(a, 1e-10)
-        p_b = p_ing.get(b, 1e-10)
-        pmi = math.log2(p_ab / (p_a * p_b)) if p_ab > 0 else 0
-        if pmi >= min_pmi:
-            shared = set(ing_mols.get(a, [])) & set(ing_mols.get(b, []))
-            shared_names = [mid2name.get(m, str(m)) for m in sorted(shared)[:5]]
-            edges.append({
-                "source": a,
-                "target": b,
-                "pmi": round(pmi, 4),
-                "shared_molecules": shared_names,
-            })
-
-    edges.sort(key=lambda e: e["pmi"], reverse=True)
-    edges = edges[:max_edges]
-    print(f"  PMI: {len(edges)} edges (min_pmi={min_pmi})")
-    return edges
+def clean_multi(value: str | None) -> str:
+    if not value:
+        return ""
+    text = html.unescape(str(value))
+    text = text.replace("|", ",")
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    return " ".join(parts)
 
 
-# ---------------------------------------------------------------------------
-# SVD
-# ---------------------------------------------------------------------------
+def load_games(db_path: Path) -> list[dict]:
+    con = sqlite3.connect(db_path)
+    query = """
+    SELECT
+      "game.id" AS game_id,
+      "details.name" AS name,
+      "details.description" AS description,
+      "attributes.boardgamecategory" AS category,
+      "attributes.boardgamemechanic" AS mechanic,
+      "details.yearpublished" AS year_published,
+      "stats.average" AS average_rating,
+      "stats.usersrated" AS users_rated,
+      "game.type" AS game_type
+    FROM BoardGames
+    WHERE "game.type" = 'boardgame'
+      AND COALESCE("stats.usersrated", 0) > ?
+      AND "details.name" IS NOT NULL
+      AND "details.description" IS NOT NULL
+    """
+    cur = con.execute(query, [RATINGS_THRESHOLD])
+    rows = cur.fetchall()
+    con.close()
 
-def build_svd(tfidf_mat, ingredient_ids, all_mol_ids, mid2name, n_components: int = 20):
-    k = min(n_components, tfidf_mat.shape[0] - 1, tfidf_mat.shape[1] - 1)
-    print(f"  Running TruncatedSVD with k={k}")
-    svd = TruncatedSVD(n_components=k, random_state=42)
-    embeddings = svd.fit_transform(tfidf_mat)
+    games: list[dict] = []
+    for row in rows:
+        game_id, name, description, category, mechanic, year_published, average_rating, users_rated, _ = row
+        name = clean_text(name)
+        description = clean_text(description)
+        category = clean_multi(category)
+        mechanic = clean_multi(mechanic)
 
-    explained = svd.explained_variance_ratio_.tolist()
+        if not name or not description:
+            continue
 
-    top_molecules = []
-    for dim_idx in range(k):
-        component = svd.components_[dim_idx]
-        top_indices = np.argsort(np.abs(component))[::-1][:10]
-        top_mols = []
-        for ci in top_indices:
-            mid = all_mol_ids[ci]
-            top_mols.append({
-                "molecule_id": mid,
-                "name": mid2name.get(mid, str(mid)),
-                "loading": round(float(component[ci]), 6),
-            })
-        top_molecules.append(top_mols)
+        combined_text = f"{description} {category} {mechanic}".strip()
+        if not combined_text:
+            continue
 
-    return svd.components_, embeddings, explained, top_molecules
+        games.append(
+            {
+                "id": str(game_id),
+                "name": name,
+                "description": description,
+                "category": category,
+                "mechanic": mechanic,
+                "year_published": int(year_published) if year_published is not None else None,
+                "average_rating": float(average_rating) if average_rating is not None else None,
+                "users_rated": int(users_rated) if users_rated is not None else 0,
+                "combined_text": combined_text,
+            }
+        )
+
+    return games
 
 
-# ---------------------------------------------------------------------------
-# Chunk TF-IDF for RAG retrieval
-# ---------------------------------------------------------------------------
-
-def build_chunk_tfidf(con):
-    rows = con.execute("SELECT id, chunk_text FROM recipe_chunks").fetchall()
-    if not rows:
-        print("  [skip] No recipe chunks to index")
-        return
-
-    chunk_ids = [r[0] for r in rows]
-    texts = [r[1] for r in rows]
-
-    print(f"  Building chunk TF-IDF index for {len(texts)} chunks")
+def fit_models(games: list[dict]):
     vectorizer = TfidfVectorizer(
-        max_features=50_000,
         stop_words="english",
+        max_features=MAX_FEATURES,
+        ngram_range=(1, 2),
         sublinear_tf=True,
     )
-    mat = vectorizer.fit_transform(texts)
+    tfidf_matrix = vectorizer.fit_transform([g["combined_text"] for g in games])
 
-    sparse.save_npz(ART_DIR / "chunk_tfidf_matrix.npz", mat)
-    with open(ART_DIR / "chunk_tfidf_vocab.json", "w") as f:
-        json.dump({k: int(v) for k, v in vectorizer.vocabulary_.items()}, f)
-    with open(ART_DIR / "chunk_ids.json", "w") as f:
-        json.dump(chunk_ids, f)
+    k = min(SVD_COMPONENTS, tfidf_matrix.shape[0] - 1, tfidf_matrix.shape[1] - 1)
+    if k < 2:
+        raise RuntimeError("Not enough data to build SVD model. Need at least 3 games.")
 
-    # Save the vectorizer feature names for query-time transform
-    with open(ART_DIR / "chunk_tfidf_features.json", "w") as f:
-        json.dump(vectorizer.get_feature_names_out().tolist(), f)
+    svd_model = TruncatedSVD(n_components=k, random_state=42)
+    svd_embeddings = svd_model.fit_transform(tfidf_matrix)
 
-    print(f"  Chunk index: {mat.shape[0]} chunks × {mat.shape[1]} features")
+    return vectorizer, tfidf_matrix, svd_model, svd_embeddings
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+def build_top_terms(svd_model: TruncatedSVD, feature_names: np.ndarray, per_dim: int = 10):
+    top_terms: list[dict] = []
+    for dim_idx, component in enumerate(svd_model.components_):
+        top_idx = np.argsort(np.abs(component))[::-1][:per_dim]
+        terms = []
+        for idx in top_idx:
+            terms.append(
+                {
+                    "term": str(feature_names[idx]),
+                    "loading": round(float(component[idx]), 6),
+                }
+            )
+
+        positive_terms = [
+            str(feature_names[i])
+            for i in np.argsort(component)[::-1]
+            if component[i] > 0
+        ][:3]
+        label = " / ".join(positive_terms) if positive_terms else f"Dimension {dim_idx + 1}"
+
+        top_terms.append(
+            {
+                "index": dim_idx,
+                "label": label,
+                "terms": terms,
+            }
+        )
+    return top_terms
+
+
+def to_game_records(games: list[dict]) -> list[dict]:
+    records: list[dict] = []
+    for game in games:
+        description = game["description"] or ""
+        snippet = (description[:220] + "...") if len(description) > 220 else description
+
+        records.append(
+            {
+                "id": game["id"],
+                "name": game["name"],
+                "description": description,
+                "snippet": snippet,
+                "category": game["category"],
+                "mechanic": game["mechanic"],
+                "year_published": game["year_published"],
+                "average_rating": game["average_rating"],
+                "users_rated": game["users_rated"],
+            }
+        )
+    return records
+
 
 def main():
     if not DB_PATH.exists():
-        print(f"Database not found at {DB_PATH}")
-        print("Run: python scripts/build_duckdb.py  first")
+        print(f"Database not found: {DB_PATH}")
         sys.exit(1)
 
     ART_DIR.mkdir(parents=True, exist_ok=True)
 
-    con = duckdb.connect(str(DB_PATH), read_only=True)
-    ing_mols, id2name, id2cat, mid2name = _load_ingredient_molecules(con)
-
-    if not ing_mols:
-        print("No ingredient-molecule data found in database. Aborting.")
+    print("[1/4] Loading board games from SQLite...")
+    games = load_games(DB_PATH)
+    if not games:
+        print("No boardgame rows found after filters. Aborting.")
         sys.exit(1)
+    print(f"Loaded {len(games):,} games (type=boardgame, usersrated>{RATINGS_THRESHOLD})")
 
-    print("\n[1/4] Building TF-IDF matrix …")
-    tfidf_mat, ingredient_ids, all_mol_ids, mol2col = build_tfidf(ing_mols, id2name)
-    sparse.save_npz(ART_DIR / "tfidf_matrix.npz", tfidf_mat)
-    with open(ART_DIR / "tfidf_vocab.json", "w") as f:
-        json.dump({str(k): v for k, v in mol2col.items()}, f)
-    with open(ART_DIR / "ingredient_ids.json", "w") as f:
-        json.dump(ingredient_ids, f)
-    with open(ART_DIR / "ingredient_names.json", "w") as f:
-        json.dump({str(k): v for k, v in id2name.items()}, f)
-    with open(ART_DIR / "ingredient_categories.json", "w") as f:
-        json.dump({str(k): v for k, v in id2cat.items()}, f)
+    print("[2/4] Building TF-IDF and SVD models...")
+    vectorizer, tfidf_matrix, svd_model, svd_embeddings = fit_models(games)
+    feature_names = vectorizer.get_feature_names_out()
+    top_terms = build_top_terms(svd_model, feature_names)
 
-    print("\n[2/4] Computing PMI edges …")
-    edges = build_pmi(ing_mols, mid2name)
-    with open(ART_DIR / "pmi_edges.json", "w") as f:
-        json.dump(edges, f)
+    print("[3/4] Writing matrices/models...")
+    sparse.save_npz(ART_DIR / "tfidf_matrix.npz", tfidf_matrix)
+    np.save(ART_DIR / "svd_embeddings.npy", svd_embeddings)
+    np.save(ART_DIR / "svd_components.npy", svd_model.components_)
 
-    print("\n[3/4] Running Truncated SVD …")
-    components, embeddings, explained, top_molecules = build_svd(
-        tfidf_mat, ingredient_ids, all_mol_ids, mid2name
-    )
-    np.save(ART_DIR / "svd_components.npy", components)
-    np.save(ART_DIR / "svd_embeddings.npy", embeddings)
-    with open(ART_DIR / "svd_explained.json", "w") as f:
-        json.dump(explained, f)
-    with open(ART_DIR / "svd_top_molecules.json", "w") as f:
-        json.dump(top_molecules, f)
+    with open(ART_DIR / "tfidf_vectorizer.pkl", "wb") as f:
+        pickle.dump(vectorizer, f)
+    with open(ART_DIR / "svd_model.pkl", "wb") as f:
+        pickle.dump(svd_model, f)
 
-    print("\n[4/4] Building chunk TF-IDF for RAG …")
-    build_chunk_tfidf(con)
+    with open(ART_DIR / "svd_explained.json", "w", encoding="utf-8") as f:
+        json.dump([float(x) for x in svd_model.explained_variance_ratio_], f)
+    with open(ART_DIR / "svd_top_terms.json", "w", encoding="utf-8") as f:
+        json.dump(top_terms, f, ensure_ascii=False)
 
-    con.close()
-    print(f"\nAll artifacts written to {ART_DIR}/")
-    print("Backend is ready to start: python src/app.py")
+    print("[4/4] Writing metadata...")
+    game_records = to_game_records(games)
+    game_ids = [g["id"] for g in game_records]
+
+    with open(ART_DIR / "game_ids.json", "w", encoding="utf-8") as f:
+        json.dump(game_ids, f)
+    with open(ART_DIR / "games.json", "w", encoding="utf-8") as f:
+        json.dump(game_records, f, ensure_ascii=False)
+
+    print(f"Done. Artifacts written to {ART_DIR}")
 
 
 if __name__ == "__main__":

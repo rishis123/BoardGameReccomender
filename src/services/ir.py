@@ -1,182 +1,157 @@
-"""
-Core IR module – TF-IDF cosine similarity search for molecular substitutes.
-
-Given a seed ingredient, returns ranked substitutes based on cosine similarity
-of their TF-IDF molecule profiles.
-"""
+"""Core board-game retrieval and recommendation utilities."""
 
 from __future__ import annotations
 
-import duckdb
+import html
+import re
+from typing import Literal
+
 import numpy as np
-from scipy import sparse
 from sklearn.metrics.pairwise import cosine_similarity
 
 from services.index_store import IndexStore
 
-
-def find_substitutes(
-    store: IndexStore,
-    seed_id: int,
-    k: int = 20,
-    category: str | None = None,
-    exclude_ids: set[int] | None = None,
-) -> list[dict]:
-    """
-    Return top-k molecular substitutes for the seed ingredient.
-
-    Each result contains: id, name, category, similarity, shared_molecules.
-    """
-    if store.tfidf_matrix is None:
-        return []
-
-    row = store.id_to_row(seed_id)
-    if row is None:
-        return []
-
-    seed_vec = store.tfidf_matrix[row]
-    sims = cosine_similarity(seed_vec, store.tfidf_matrix).flatten()
-
-    exclude = exclude_ids or set()
-    exclude.add(seed_id)
-
-    ranked: list[tuple[int, float]] = []
-    for idx in np.argsort(sims)[::-1]:
-        iid = store.ingredient_ids[idx]
-        if iid in exclude:
-            continue
-        if category and store.ingredient_categories.get(iid, "").lower() != category.lower():
-            continue
-        ranked.append((iid, float(sims[idx])))
-        if len(ranked) >= k:
-            break
-
-    return [
-        {
-            "id": iid,
-            "name": store.ingredient_names.get(iid, str(iid)),
-            "category": store.ingredient_categories.get(iid, "Unknown"),
-            "similarity": round(sim, 4),
-        }
-        for iid, sim in ranked
-    ]
+Method = Literal["svd", "tfidf"]
 
 
-def get_shared_molecules(
-    db_path: str,
-    ingredient_a: int,
-    ingredient_b: int,
-    limit: int = 10,
-) -> list[dict]:
-    """Return molecules shared by two ingredients from the DuckDB."""
-    con = duckdb.connect(db_path, read_only=True)
-    rows = con.execute(
-        """
-        SELECT m.id, m.pubchem_id, m.common_name, m.flavor_profile
-        FROM ingredient_molecules a
-        JOIN ingredient_molecules b ON a.molecule_id = b.molecule_id
-        JOIN molecules m ON m.id = a.molecule_id
-        WHERE a.ingredient_id = ? AND b.ingredient_id = ?
-        LIMIT ?
-        """,
-        [ingredient_a, ingredient_b, limit],
-    ).fetchall()
-    con.close()
-    return [
-        {
-            "id": r[0],
-            "pubchem_id": r[1],
-            "common_name": r[2],
-            "flavor_profile": r[3],
-        }
-        for r in rows
-    ]
+def _clean_query(text: str) -> str:
+    text = html.unescape(text or "")
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\\s+", " ", text)
+    return text.strip()
 
 
-def get_ingredient_profile(
-    db_path: str,
-    ingredient_id: int,
-) -> dict:
-    """Return full molecular profile for an ingredient."""
-    con = duckdb.connect(db_path, read_only=True)
-
-    ing = con.execute(
-        "SELECT id, name, category, scientific_name FROM ingredients WHERE id = ?",
-        [ingredient_id],
-    ).fetchone()
-    if not ing:
-        con.close()
-        return {}
-
-    mols = con.execute(
-        """
-        SELECT m.id, m.pubchem_id, m.common_name, m.flavor_profile
-        FROM ingredient_molecules im
-        JOIN molecules m ON m.id = im.molecule_id
-        WHERE im.ingredient_id = ?
-        ORDER BY m.common_name
-        """,
-        [ingredient_id],
-    ).fetchall()
-    con.close()
-
+def _empty_result() -> dict:
     return {
-        "id": ing[0],
-        "name": ing[1],
-        "category": ing[2],
-        "scientific_name": ing[3],
-        "molecule_count": len(mols),
-        "molecules": [
-            {
-                "id": m[0],
-                "pubchem_id": m[1],
-                "common_name": m[2],
-                "flavor_profile": m[3],
-            }
-            for m in mols
-        ],
+        "query": {},
+        "recommendations": [],
+        "latent_dimensions": [],
     }
 
 
-def precision_at_k(
-    store: IndexStore,
-    db_path: str,
-    k: int = 10,
-    sample_size: int = 100,
-) -> float:
-    """
-    Evaluate Precision@k using TasteTrios compatibility labels.
+def _rank_positions(scores: np.ndarray) -> np.ndarray:
+    order = np.argsort(scores)[::-1]
+    rank = np.empty_like(order)
+    rank[order] = np.arange(1, len(order) + 1)
+    return rank
 
-    For each compatibility pair (ingredient_a, ingredient_b) marked as
-    "Highly Compatible", check whether ingredient_b appears in the
-    top-k results when searching for ingredient_a.
-    """
-    con = duckdb.connect(db_path, read_only=True)
-    pairs = con.execute(
-        """
-        SELECT ingredient_a, ingredient_b
-        FROM compatibility_pairs
-        WHERE LOWER(compatibility_level) LIKE '%highly%'
-        LIMIT ?
-        """,
-        [sample_size],
-    ).fetchall()
-    con.close()
 
-    if not pairs:
-        return 0.0
+def _latent_dims(store: IndexStore, limit: int = 10) -> list[dict]:
+    dims = []
+    for d in store.svd_top_terms[:limit]:
+        idx = d.get("index", 0)
+        dims.append(
+            {
+                "index": idx,
+                "label": d.get("label", f"Dimension {idx + 1}"),
+                "explained_variance": float(store.svd_explained[idx]) if idx < len(store.svd_explained) else 0.0,
+                "terms": d.get("terms", []),
+            }
+        )
+    return dims
 
-    hits = 0
-    evaluated = 0
-    for ing_a_name, ing_b_name in pairs:
-        a_id = store.name_to_id(ing_a_name)
-        b_id = store.name_to_id(ing_b_name)
-        if a_id is None or b_id is None:
+
+def _why_tags(store: IndexStore, query_svd: np.ndarray, row_idx: int, top_n: int = 3) -> list[dict]:
+    game_vec = store.svd_embeddings[row_idx]
+    contrib = query_svd.flatten() * game_vec
+    pos_dims = np.argsort(contrib)[::-1]
+
+    tags: list[dict] = []
+    for dim_idx in pos_dims:
+        score = float(contrib[dim_idx])
+        if score <= 0:
             continue
-        results = find_substitutes(store, a_id, k=k)
-        result_ids = {r["id"] for r in results}
-        if b_id in result_ids:
-            hits += 1
-        evaluated += 1
+        top = store.svd_top_terms[dim_idx] if dim_idx < len(store.svd_top_terms) else {}
+        tags.append(
+            {
+                "index": int(dim_idx),
+                "label": top.get("label", f"Dimension {dim_idx + 1}"),
+                "activation": round(score, 4),
+            }
+        )
+        if len(tags) >= top_n:
+            break
+    return tags
 
-    return hits / evaluated if evaluated > 0 else 0.0
+
+def recommend_games(
+    store: IndexStore,
+    query_text: str | None = None,
+    seed_id: str | int | None = None,
+    k: int = 10,
+    method: Method = "svd",
+) -> dict:
+    if store.tfidf_matrix is None or store.svd_embeddings is None or store.vectorizer is None or store.svd_model is None:
+        return _empty_result()
+
+    source = None
+    query_tfidf = None
+    query_svd = None
+    seed_row = None
+
+    if seed_id is not None:
+        seed_row = store.game_row(seed_id)
+        if seed_row is None:
+            return _empty_result()
+        query_tfidf = store.tfidf_matrix[seed_row]
+        query_svd = store.svd_embeddings[seed_row : seed_row + 1]
+        source = store.games[seed_row]
+    elif query_text and query_text.strip():
+        cleaned = _clean_query(query_text)
+        query_tfidf = store.vectorizer.transform([cleaned])
+        query_svd = store.svd_model.transform(query_tfidf)
+    else:
+        return _empty_result()
+
+    sims_tfidf = cosine_similarity(query_tfidf, store.tfidf_matrix).flatten()
+    sims_svd = cosine_similarity(query_svd, store.svd_embeddings).flatten()
+
+    if seed_row is not None:
+        sims_tfidf[seed_row] = -1
+        sims_svd[seed_row] = -1
+
+    primary = sims_svd if method == "svd" else sims_tfidf
+    rank_primary = np.argsort(primary)[::-1]
+    rank_tfidf = _rank_positions(sims_tfidf)
+    rank_svd = _rank_positions(sims_svd)
+
+    recs: list[dict] = []
+    for idx in rank_primary:
+        if primary[idx] <= 0:
+            continue
+        game = store.games[idx]
+        recs.append(
+            {
+                "id": game["id"],
+                "name": game["name"],
+                "snippet": game.get("snippet", ""),
+                "year_published": game.get("year_published"),
+                "average_rating": game.get("average_rating"),
+                "users_rated": game.get("users_rated", 0),
+                "category": game.get("category", ""),
+                "mechanic": game.get("mechanic", ""),
+                "score_svd": round(float(sims_svd[idx]), 4),
+                "score_tfidf": round(float(sims_tfidf[idx]), 4),
+                "rank_svd": int(rank_svd[idx]),
+                "rank_tfidf": int(rank_tfidf[idx]),
+                "why_tags": _why_tags(store, query_svd, idx),
+            }
+        )
+        if len(recs) >= k:
+            break
+
+    query_payload = {
+        "method": method,
+        "text": query_text if query_text else None,
+        "seed": source,
+    }
+
+    return {
+        "query": query_payload,
+        "recommendations": recs,
+        "latent_dimensions": _latent_dims(store, limit=10),
+    }
+
+
+def get_latent_dimensions(store: IndexStore, limit: int = 10) -> list[dict]:
+    return _latent_dims(store, limit=limit)

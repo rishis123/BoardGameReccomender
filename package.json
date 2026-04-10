@@ -6,8 +6,8 @@
     "install-all": "pip install -r requirements.txt && cd frontend && npm install",
     "dev": "cd frontend && npm run dev",
     "build": "cd frontend && npm run build",
-    "start": "python src/app.py",
-    "prepare-data": "python scripts/download_datasets.py && python scripts/build_duckdb.py && python scripts/build_indices.py"
+    "start": "python3 src/app.py",
+    "prepare-data": "python3 scripts/build_indices.py"
   },
   "keywords": [
     "flask",

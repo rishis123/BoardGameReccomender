@@ -1,14 +1,15 @@
-import json
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-
-load_dotenv()
 from flask import Flask
 from flask_cors import CORS
+
 from models import db
 from routes import register_routes
+from services.index_store import IndexStore
+
+load_dotenv()
 
 current_directory = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_directory)
@@ -25,11 +26,6 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db.init_app(app)
 
-# ---------------------------------------------------------------------------
-# Load pre-computed artifacts into a shared IndexStore
-# ---------------------------------------------------------------------------
-from services.index_store import IndexStore
-
 artifacts_dir = Path(project_root) / "data" / "artifacts"
 store = IndexStore(artifacts_dir)
 
@@ -37,11 +33,11 @@ try:
     store.load()
 except FileNotFoundError as e:
     print(f"[warn] {e}")
-    print("[warn] The app will start but IR/PMI/SVD endpoints will return empty results.")
-    print("[warn] Run:  python scripts/download_datasets.py && python scripts/build_duckdb.py && python scripts/build_indices.py")
+    print("[warn] The app will start but recommendation endpoints will return empty results.")
+    print("[warn] Run: python scripts/build_indices.py")
 
 app.config["INDEX_STORE"] = store
-app.config["DB_PATH"] = str(Path(project_root) / "data" / "flavormatrix.duckdb")
+app.config["SQLITE_DB_PATH"] = str(Path(project_root) / "data" / "database.sqlite")
 
 register_routes(app)
 
