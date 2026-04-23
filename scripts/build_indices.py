@@ -71,7 +71,8 @@ def load_games(db_path: Path) -> list[dict]:
       "details.yearpublished" AS year_published,
       "stats.average" AS average_rating,
       "stats.usersrated" AS users_rated,
-      "game.type" AS game_type
+      "game.type" AS game_type,
+      "details.thumbnail" AS thumbnail
     FROM BoardGames
     WHERE "game.type" = 'boardgame'
       AND COALESCE("stats.usersrated", 0) > ?
@@ -84,7 +85,7 @@ def load_games(db_path: Path) -> list[dict]:
 
     games: list[dict] = []
     for row in rows:
-        game_id, name, description, category, mechanic, year_published, average_rating, users_rated, _ = row
+        game_id, name, description, category, mechanic, year_published, average_rating, users_rated, _, thumbnail = row
         name = clean_text(name)
         description = clean_text(description)
         category = clean_multi(category)
@@ -108,6 +109,7 @@ def load_games(db_path: Path) -> list[dict]:
                 "average_rating": float(average_rating) if average_rating is not None else None,
                 "users_rated": int(users_rated) if users_rated is not None else 0,
                 "combined_text": combined_text,
+                "thumbnail": thumbnail or None,
             }
         )
 
@@ -180,6 +182,7 @@ def to_game_records(games: list[dict]) -> list[dict]:
                 "year_published": game["year_published"],
                 "average_rating": game["average_rating"],
                 "users_rated": game["users_rated"],
+                "thumbnail": game.get("thumbnail"),
             }
         )
     return records

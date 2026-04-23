@@ -155,3 +155,57 @@ def recommend_games(
 
 def get_latent_dimensions(store: IndexStore, limit: int = 10) -> list[dict]:
     return _latent_dims(store, limit=limit)
+
+
+def get_game_dimensions(store: IndexStore, game_id: str | int, top_n: int = 6) -> list[dict]:
+    """Return the top SVD dimensions for a specific game by its ID."""
+    if store.svd_embeddings is None:
+        return []
+    row = store.game_row(game_id)
+    if row is None:
+        return []
+
+    game_svd = store.svd_embeddings[row]
+    top_indices = np.argsort(np.abs(game_svd))[::-1][:top_n]
+
+    dims = []
+    for idx in top_indices:
+        top = store.svd_top_terms[idx] if idx < len(store.svd_top_terms) else {}
+        dims.append({
+            "index": int(idx),
+            "label": top.get("label", f"Dimension {idx + 1}"),
+            "activation": round(float(game_svd[idx]), 4),
+            "terms": top.get("terms", [])[:5],
+        })
+    return dims
+
+
+def get_query_dimensions(store: IndexStore, query_text: str, top_n: int = 6) -> list[dict]:
+    """
+    Project a query into SVD space and return the top activated dimensions.
+
+    Unlike get_latent_dimensions (global corpus stats), this shows which
+    dimensions the specific query lights up most strongly.
+    """
+    if store.vectorizer is None or store.svd_model is None:
+        return []
+
+    cleaned = _clean_query(query_text)
+    if not cleaned:
+        return []
+
+    query_tfidf = store.vectorizer.transform([cleaned])
+    query_svd = store.svd_model.transform(query_tfidf).flatten()
+
+    top_indices = np.argsort(np.abs(query_svd))[::-1][:top_n]
+
+    dims = []
+    for idx in top_indices:
+        top = store.svd_top_terms[idx] if idx < len(store.svd_top_terms) else {}
+        dims.append({
+            "index": int(idx),
+            "label": top.get("label", f"Dimension {idx + 1}"),
+            "activation": round(float(query_svd[idx]), 4),
+            "terms": top.get("terms", [])[:5],
+        })
+    return dims

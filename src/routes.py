@@ -8,8 +8,6 @@ from flask import jsonify, request, send_from_directory
 
 from models import Feedback, MetricsCache, db
 
-USE_LLM = False
-
 
 def register_routes(app):
     @app.route("/", defaults={"path": ""})
@@ -21,7 +19,7 @@ def register_routes(app):
 
     @app.route("/api/config")
     def config():
-        return jsonify({"use_llm": USE_LLM})
+        return jsonify({"use_llm": bool(os.getenv("SPARK_API_KEY"))})
 
     @app.route("/api/games/search")
     def games_search():
@@ -97,7 +95,86 @@ def register_routes(app):
         db.session.commit()
         return jsonify({"status": "ok", "id": fb.id})
 
-    if USE_LLM:
-        from llm_routes import register_chat_route
+    @app.route("/api/games/dimensions")
+    def game_dimensions():
+        from services.ir import get_game_dimensions
+        store = app.config.get("INDEX_STORE")
+        game_id = request.args.get("id", "").strip()
+        if not store or not game_id:
+            return jsonify([])
+        return jsonify(get_game_dimensions(store, game_id))
 
-        register_chat_route(app)
+    @app.route("/api/rag")
+    def rag():
+        from services.ir import recommend_games, get_query_dimensions, get_game_dimensions
+        from services.query_rewriter import rewrite_query
+
+        store = app.config.get("INDEX_STORE")
+        if not store:
+            return jsonify({"error": "Index not loaded"}), 503
+
+        seed_id = request.args.get("seed", "").strip() or None
+        query_text = request.args.get("q", "").strip() or None
+
+        if not seed_id and not query_text:
+            return jsonify({"error": "seed or q is required"}), 400
+
+        k = max(1, min(request.args.get("k", 10, type=int), 25))
+        method = request.args.get("method", "svd").strip().lower()
+        if method not in {"svd", "tfidf"}:
+            method = "svd"
+
+        # Standard IR — seed takes priority; details text is for LLM context only
+        if seed_id:
+            original_payload = recommend_games(store=store, seed_id=seed_id, k=k, method=method)
+            original_dims = get_game_dimensions(store, seed_id)
+            seed_game = store.game_by_id(seed_id)
+            seed_name = seed_game["name"] if seed_game else ""
+        else:
+            original_payload = recommend_games(store=store, query_text=query_text, k=k, method=method)
+            original_dims = get_query_dimensions(store, query_text)
+            seed_name = None
+
+        # Build a combined description for the LLM to rewrite
+        if seed_name and query_text:
+            llm_input = f"Games similar to {seed_name}, but {query_text}"
+        elif seed_name:
+            llm_input = f"Games similar to {seed_name}"
+        else:
+            llm_input = query_text
+
+        # Human-readable label for the left column header
+        if seed_name and query_text:
+            original_label = f"Similar to {seed_name} + details"
+        elif seed_name:
+            original_label = f"Similar to {seed_name}"
+        else:
+            original_label = query_text
+
+        # LLM query rewriting
+        api_key = os.getenv("SPARK_API_KEY")
+        rewritten_query = llm_input
+        rag_results = original_payload.get("recommendations", [])
+        rewritten_dims = original_dims
+        error = None
+
+        if api_key:
+            try:
+                rewritten_query = rewrite_query(llm_input, original_dims, api_key)
+                rag_payload = recommend_games(store=store, query_text=rewritten_query, k=k, method=method)
+                rag_results = rag_payload.get("recommendations", [])
+                rewritten_dims = get_query_dimensions(store, rewritten_query)
+            except Exception as e:
+                error = str(e)
+        else:
+            error = "SPARK_API_KEY not configured"
+
+        return jsonify({
+            "original_label": original_label,
+            "original_dims": original_dims,
+            "rewritten_query": rewritten_query,
+            "rewritten_dims": rewritten_dims,
+            "original_results": original_payload.get("recommendations", []),
+            "rag_results": rag_results,
+            "error": error,
+        })

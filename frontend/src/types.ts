@@ -1,74 +1,3 @@
-export interface Ingredient {
-  id: number;
-  name: string;
-  category: string;
-}
-
-export interface Substitution extends Ingredient {
-  similarity: number;
-  shared_molecules: Molecule[];
-}
-
-export interface Molecule {
-  id: number;
-  pubchem_id: string;
-  common_name: string;
-  flavor_profile: string;
-}
-
-export interface IngredientProfile extends Ingredient {
-  scientific_name: string;
-  molecule_count: number;
-  molecules: Molecule[];
-}
-
-export interface PMIEdge {
-  source: number;
-  target: number;
-  pmi: number;
-  shared_molecules: string[];
-}
-
-export interface NetworkData {
-  nodes: Ingredient[];
-  edges: PMIEdge[];
-}
-
-export interface SensoryPoint {
-  id: number;
-  name: string;
-  category: string;
-  x: number;
-  y: number;
-  z: number;
-}
-
-export interface DimensionInfo {
-  index: number;
-  label: string;
-  explained_variance: number;
-  top_molecules: { molecule_id: number; name: string; loading: number }[];
-}
-
-export interface SensoryMapData {
-  points: SensoryPoint[];
-  dimensions: DimensionInfo[];
-}
-
-export interface MetricsData {
-  avg_feedback: number;
-  total_feedback: number;
-  precision_at_k?: number;
-  [key: string]: number | undefined;
-}
-
-export interface ChatMessage {
-  text: string;
-  isUser: boolean;
-  citations?: string[];
-  id?: string;
-}
-
 export interface GameSuggestion {
   id: string;
   name: string;
@@ -98,6 +27,7 @@ export interface RecommendationResult {
   id: string;
   name: string;
   snippet: string;
+  thumbnail: string | null;
   year_published: number | null;
   average_rating: number | null;
   users_rated: number;
@@ -114,11 +44,25 @@ export interface RecommendationResponse {
   query: {
     method?: 'svd' | 'tfidf';
     text?: string | null;
-    seed?: {
-      id: string;
-      name: string;
-    } | null;
+    seed?: { id: string; name: string } | null;
   };
   recommendations: RecommendationResult[];
   latent_dimensions: LatentDimension[];
+}
+
+export interface QueryDimension {
+  index: number;
+  label: string;
+  activation: number;
+  terms: TermLoading[];
+}
+
+export interface RagResponse {
+  original_label: string;
+  original_dims: QueryDimension[];
+  rewritten_query: string;
+  rewritten_dims: QueryDimension[];
+  original_results: RecommendationResult[];
+  rag_results: RecommendationResult[];
+  error: string | null;
 }
