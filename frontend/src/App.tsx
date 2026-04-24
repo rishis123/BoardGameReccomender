@@ -1,3 +1,5 @@
+const API_BASE = (import.meta.env.VITE_API_BASE_URL as string) ?? ''
+
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import Landing from './Landing'
@@ -188,7 +190,7 @@ function App(): JSX.Element {
       const q = seedQuery.trim()
       if (q.length < 2 || seed) { setSuggestions([]); return }
       try {
-        const res = await fetch(`/api/games/search?q=${encodeURIComponent(q)}`)
+        const res = await fetch(`${API_BASE}/api/games/search?q=${encodeURIComponent(q)}`)
         setSuggestions(await res.json())
       } catch { setSuggestions([]) }
     }, 200)
@@ -213,7 +215,7 @@ function App(): JSX.Element {
     setSeedQuery(game.name)
     setSuggestions([])
     try {
-      const res = await fetch(`/api/games/dimensions?id=${game.id}`)
+      const res = await fetch(`${API_BASE}/api/games/dimensions?id=${game.id}`)
       setSeedDims(await res.json())
     } catch { setSeedDims([]) }
   }
@@ -234,7 +236,7 @@ function App(): JSX.Element {
     if (details.trim()) params.set('q', details.trim())
 
     try {
-      const res = await fetch(`/api/rag?${params}`)
+      const res = await fetch(`${API_BASE}/api/rag?${params}`)
       const data: RagResponse = await res.json()
       setResults(data.original_results || [])
       setRagResults(data.rag_results || [])
@@ -297,7 +299,7 @@ function App(): JSX.Element {
                     if (seedQuery.trim().length > 1) {
                       void (async () => {
                         try {
-                          const res = await fetch(`/api/games/search?q=${encodeURIComponent(seedQuery.trim())}`)
+                          const res = await fetch(`${API_BASE}/api/games/search?q=${encodeURIComponent(seedQuery.trim())}`)
                           setSuggestions(await res.json())
                         } catch { setSuggestions([]) }
                       })()

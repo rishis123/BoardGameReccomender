@@ -9,7 +9,7 @@ from flask import jsonify, request, send_from_directory
 from models import Feedback, MetricsCache, db
 
 
-def register_routes(app):
+def register_routes(app, limiter):
     @app.route("/", defaults={"path": ""})
     @app.route("/<path:path>")
     def serve(path):
@@ -19,7 +19,7 @@ def register_routes(app):
 
     @app.route("/api/config")
     def config():
-        return jsonify({"use_llm": bool(os.getenv("SPARK_API_KEY"))})
+        return jsonify({"use_llm": bool(os.getenv("GEMINI_API_KEY"))})
 
     @app.route("/api/games/search")
     def games_search():
@@ -105,9 +105,10 @@ def register_routes(app):
         return jsonify(get_game_dimensions(store, game_id))
 
     @app.route("/api/rag")
+    @limiter.limit("5 per minute; 50 per day")
     def rag():
         from services.ir import recommend_games, get_query_dimensions, get_game_dimensions
-        from services.query_rewriter import rewrite_query
+        from services.query_rewriter import rewrite_query, generate_summary
 
         store = app.config.get("INDEX_STORE")
         if not store:
@@ -151,21 +152,20 @@ def register_routes(app):
         else:
             original_label = query_text
 
-        # LLM query rewriting
-        api_key = os.getenv("SPARK_API_KEY")
+        # LLM query rewriting + summary
+        api_key = os.getenv("GEMINI_API_KEY")
         rewritten_query = llm_input
         rag_results = original_payload.get("recommendations", [])
         rewritten_dims = original_dims
+        llm_summary = None
         error = None
 
-        llm_summary = None
         if api_key:
             try:
                 rewritten_query = rewrite_query(llm_input, original_dims, api_key)
                 rag_payload = recommend_games(store=store, query_text=rewritten_query, k=k, method=method)
                 rag_results = rag_payload.get("recommendations", [])
                 rewritten_dims = get_query_dimensions(store, rewritten_query)
-                from services.query_rewriter import generate_summary
                 llm_summary = generate_summary(
                     original_query=llm_input,
                     original_dims=original_dims,
@@ -178,7 +178,7 @@ def register_routes(app):
             except Exception as e:
                 error = str(e)
         else:
-            error = "SPARK_API_KEY not configured"
+            error = "GEMINI_API_KEY not configured"
 
         return jsonify({
             "original_label": original_label,
