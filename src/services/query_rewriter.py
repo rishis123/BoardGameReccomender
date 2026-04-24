@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from google import genai
+from google.genai import types
 
 
-def _call(api_key: str, prompt: str) -> str:
+def _call(api_key: str, system: str, user: str) -> str:
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model="gemini-1.5-flash",
-        contents=prompt,
+        contents=user,
+        config=types.GenerateContentConfig(system_instruction=system),
     )
     return response.text.strip()
 
@@ -23,10 +25,6 @@ def generate_summary(
     rag_results: list[dict],
     api_key: str,
 ) -> str:
-    """
-    Ask Gemini to write a unified, user-friendly narrative summarising both
-    result sets and the latent themes they activated.
-    """
     def fmt_dims(dims: list[dict]) -> str:
         top = sorted(dims, key=lambda d: abs(d.get("activation", 0)), reverse=True)[:3]
         return "\n".join(
@@ -42,7 +40,7 @@ def generate_summary(
             for r in results[:5]
         )
 
-    prompt = (
+    system = (
         "You are a friendly board-game expert writing a concise recommendation summary. "
         "You have run two searches: a standard IR search and an AI-enhanced search with "
         "a rewritten query. Write the summary in this exact structure:\n\n"
@@ -56,18 +54,20 @@ def generate_summary(
         "(repeat for top 3 AI results)\n\n"
         "One closing sentence with a single top overall recommendation and why.\n\n"
         "Rules: Use exactly the format above. Bold game names with **Name**. "
-        "Bullet lines start with '- '. No markdown headers. Be warm and specific.\n\n"
+        "Bullet lines start with '- '. No markdown headers. Be warm and specific."
+    )
+
+    user = (
         f'User query: "{original_query}"\n\n'
         f"Top latent themes activated:\n{fmt_dims(original_dims)}\n\n"
         f"Standard search — top results:\n{fmt_games(original_results)}\n\n"
         f'AI rewrote query to: "{rewritten_query}"\n'
         f"New themes activated:\n{fmt_dims(rewritten_dims)}\n\n"
-        f"AI-enhanced search — top results:\n{fmt_games(rag_results)}\n\n"
-        "Write the summary:"
+        f"AI-enhanced search — top results:\n{fmt_games(rag_results)}"
     )
 
     try:
-        return _call(api_key, prompt)
+        return _call(api_key, system, user)
     except Exception:
         return ""
 
@@ -89,20 +89,24 @@ def rewrite_query(
         for d in sorted_dims
     )
 
-    prompt = (
-        "You are a board game search query optimizer. "
-        "Rewrite the user's query so it retrieves more relevant board games "
-        "from a TF-IDF/SVD index. Use specific mechanics, themes, and genre "
-        "vocabulary drawn from the dimensions this query already activates. "
-        "The activation score shows how strongly the query hits each dimension — "
-        "focus your rewrite on the highest-scoring ones. "
-        "Output ONLY the rewritten query — no explanation, no quotes, under 25 words.\n\n"
+    system = (
+        "You are a board game search query optimizer. Your job is to rewrite a user's query "
+        "into a short list of precise board game vocabulary terms that will retrieve better results "
+        "from a TF-IDF/SVD index. Focus on the latent dimensions with the highest activation scores — "
+        "pull the most relevant terms from those dimensions and combine them with any strong theme words "
+        "from the original query. Output ONLY the rewritten query. No explanation, no quotes, no preamble. "
+        "Under 25 words. Think: mechanic names, theme words, genre terms — not natural language sentences."
+    )
+
+    user = (
         f"Original query: {original_query}\n\n"
-        f"Dimensions this query activates (activation score + key terms):\n{dims_text}\n\n"
-        "Rewritten query:"
+        f"Latent dimensions this query activates (sorted by strength):\n{dims_text}\n\n"
+        "Example of good output: 'resource trading settlement building hex tile strategy'\n"
+        "Example of bad output: 'Games similar to Catan but with shorter play time'\n\n"
+        "Rewritten query (space-separated terms only, under 25 words, NO sentences, NO 'games similar to'):"
     )
 
     try:
-        return _call(api_key, prompt) or original_query
+        return _call(api_key, system, user) or original_query
     except Exception:
         return original_query
