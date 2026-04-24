@@ -108,6 +108,44 @@ function GameCard({ r }: { r: RecommendationResult }) {
   )
 }
 
+function renderBold(text: string) {
+  return text.split(/\*\*(.+?)\*\*/).map((part, k) =>
+    k % 2 === 1 ? <strong key={k}>{part}</strong> : part
+  )
+}
+
+function SummaryPanel({ summary }: { summary: string }) {
+  type Block = { type: 'list'; items: string[] } | { type: 'para'; text: string }
+
+  const blocks: Block[] = []
+  for (const raw of summary.split('\n')) {
+    const line = raw.trim()
+    if (!line) continue
+    if (line.startsWith('- ')) {
+      const last = blocks[blocks.length - 1]
+      if (last?.type === 'list') last.items.push(line.slice(2))
+      else blocks.push({ type: 'list', items: [line.slice(2)] })
+    } else {
+      blocks.push({ type: 'para', text: line })
+    }
+  }
+
+  return (
+    <div className="bg-summary">
+      <div className="bg-summary-label">AI Summary</div>
+      {blocks.map((block, i) =>
+        block.type === 'list' ? (
+          <ul key={i} className="bg-summary-list">
+            {block.items.map((item, j) => <li key={j}>{renderBold(item)}</li>)}
+          </ul>
+        ) : (
+          <p key={i} className="bg-summary-para">{renderBold(block.text)}</p>
+        )
+      )}
+    </div>
+  )
+}
+
 function App(): JSX.Element {
   // Landing phase: 'landing' → 'leaving' → 'app'
   const [phase, setPhase] = useState<'landing' | 'leaving' | 'app'>('landing')
@@ -137,6 +175,7 @@ function App(): JSX.Element {
   const [originalDims, setOriginalDims] = useState<QueryDimension[]>([])
   const [rewrittenDims, setRewrittenDims] = useState<QueryDimension[]>([])
   const [ragError, setRagError] = useState<string | null>(null)
+  const [llmSummary, setLlmSummary] = useState<string | null>(null)
   const [hasResults, setHasResults] = useState(false)
 
   const [loading, setLoading] = useState(false)
@@ -204,6 +243,7 @@ function App(): JSX.Element {
       setOriginalDims(data.original_dims || [])
       setRewrittenDims(data.rewritten_dims || [])
       setRagError(data.error || null)
+      setLlmSummary(data.llm_summary || null)
       setHasResults(true)
       setMessage(`Showing ${data.original_results?.length ?? 0} results per column.`)
     } catch {
@@ -330,6 +370,7 @@ function App(): JSX.Element {
 
       {hasResults && (
         <main className="bg-main">
+          {llmSummary && <SummaryPanel summary={llmSummary} />}
           <div className="bg-two-cols">
             {/* Left: standard IR */}
             <section className="bg-col">

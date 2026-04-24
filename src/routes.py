@@ -158,12 +158,23 @@ def register_routes(app):
         rewritten_dims = original_dims
         error = None
 
+        llm_summary = None
         if api_key:
             try:
                 rewritten_query = rewrite_query(llm_input, original_dims, api_key)
                 rag_payload = recommend_games(store=store, query_text=rewritten_query, k=k, method=method)
                 rag_results = rag_payload.get("recommendations", [])
                 rewritten_dims = get_query_dimensions(store, rewritten_query)
+                from services.query_rewriter import generate_summary
+                llm_summary = generate_summary(
+                    original_query=llm_input,
+                    original_dims=original_dims,
+                    original_results=original_payload.get("recommendations", []),
+                    rewritten_query=rewritten_query,
+                    rewritten_dims=rewritten_dims,
+                    rag_results=rag_results,
+                    api_key=api_key,
+                )
             except Exception as e:
                 error = str(e)
         else:
@@ -176,5 +187,6 @@ def register_routes(app):
             "rewritten_dims": rewritten_dims,
             "original_results": original_payload.get("recommendations", []),
             "rag_results": rag_results,
+            "llm_summary": llm_summary,
             "error": error,
         })

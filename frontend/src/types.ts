@@ -64,5 +64,6 @@ export interface RagResponse {
   rewritten_dims: QueryDimension[];
   original_results: RecommendationResult[];
   rag_results: RecommendationResult[];
+  llm_summary: string | null;
   error: string | null;
 }

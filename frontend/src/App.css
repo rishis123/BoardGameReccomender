@@ -624,6 +624,49 @@
   background: #fdf4f4;
 }
 
+/* ── AI Summary panel ───────────────────────────────── */
+.bg-summary {
+  background: linear-gradient(135deg, #fdfaf3 0%, #f6f0e4 100%);
+  border: 1px solid #d8cdb8;
+  border-left: 4px solid #8b7a59;
+  border-radius: 14px;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 4px 18px rgba(43, 40, 34, 0.07);
+}
+
+.bg-summary-label {
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: #8b7a59;
+  margin-bottom: 2px;
+}
+
+.bg-summary-para {
+  margin: 0;
+  font-size: 0.97rem;
+  color: #2e2a22;
+  line-height: 1.7;
+}
+
+.bg-summary-list {
+  margin: 0;
+  padding-left: 1.2em;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bg-summary-list li {
+  font-size: 0.97rem;
+  color: #2e2a22;
+  line-height: 1.6;
+}
+
 /* ── Responsive ─────────────────────────────────────── */
 @media (max-width: 1000px) {
   .bg-two-cols {
