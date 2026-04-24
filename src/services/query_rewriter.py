@@ -7,6 +7,7 @@ from google.genai import types
 
 
 def _call(api_key: str, system: str, user: str) -> str:
+    print(f"[_call] api_key present: {bool(api_key)}, model: gemini-1.5-flash")
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model="gemini-1.5-flash",
@@ -68,7 +69,8 @@ def generate_summary(
 
     try:
         return _call(api_key, system, user)
-    except Exception:
+    except Exception as e:
+        print(f"[generate_summary error] {e}")
         return ""
 
 
@@ -108,5 +110,6 @@ def rewrite_query(
 
     try:
         return _call(api_key, system, user) or original_query
-    except Exception:
+    except Exception as e:
+        print(f"[rewrite_query error] {e}")
         return original_query
