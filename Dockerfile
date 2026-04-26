@@ -9,6 +9,9 @@ RUN npm install
 
 COPY frontend/ ./
 
+ARG VITE_TURNSTILE_SITE_KEY
+ENV VITE_TURNSTILE_SITE_KEY=$VITE_TURNSTILE_SITE_KEY
+
 RUN npm run build
 
 # Stage 2: Install Python deps

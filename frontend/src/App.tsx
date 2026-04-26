@@ -1,6 +1,8 @@
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string) ?? ''
+const TURNSTILE_SITE_KEY = (import.meta.env.VITE_TURNSTILE_SITE_KEY as string) ?? ''
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { Turnstile, TurnstileInstance } from '@marsidev/react-turnstile'
 import './App.css'
 import Landing from './Landing'
 import {
@@ -180,6 +182,9 @@ function App(): JSX.Element {
   const [llmSummary, setLlmSummary] = useState<string | null>(null)
   const [hasResults, setHasResults] = useState(false)
 
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null)
+  const turnstileRef = useRef<TurnstileInstance>(null)
+
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('Pick a game, describe what you want, or both.')
   const controlsRef = useRef<HTMLElement | null>(null)
@@ -206,8 +211,8 @@ function App(): JSX.Element {
   }, [])
 
   const canSearch = useMemo(
-    () => seed !== null || details.trim().length > 1,
-    [seed, details]
+    () => (seed !== null || details.trim().length > 1) && (!TURNSTILE_SITE_KEY || turnstileToken !== null),
+    [seed, details, turnstileToken]
   )
 
   const selectSeed = async (game: GameSuggestion) => {
@@ -234,6 +239,7 @@ function App(): JSX.Element {
     const params = new URLSearchParams({ method, k: String(k) })
     if (seed) params.set('seed', seed.id)
     if (details.trim()) params.set('q', details.trim())
+    if (turnstileToken) params.set('turnstile_token', turnstileToken)
 
     try {
       const res = await fetch(`${API_BASE}/api/rag?${params}`)
@@ -254,6 +260,8 @@ function App(): JSX.Element {
       setMessage('Request failed. Check backend server logs.')
     } finally {
       setLoading(false)
+      setTurnstileToken(null)
+      turnstileRef.current?.reset()
     }
   }
 
@@ -361,6 +369,17 @@ function App(): JSX.Element {
               onChange={(e) => setK(Math.max(1, Math.min(20, Number(e.target.value) || 8)))}
             />
           </label>
+
+          {TURNSTILE_SITE_KEY && (
+            <Turnstile
+              ref={turnstileRef}
+              siteKey={TURNSTILE_SITE_KEY}
+              onSuccess={(token) => setTurnstileToken(token)}
+              onExpire={() => setTurnstileToken(null)}
+              onError={() => setTurnstileToken(null)}
+              options={{ appearance: 'interaction-only', size: 'compact' }}
+            />
+          )}
 
           <button type="submit" disabled={!canSearch || loading}>
             {loading ? 'Searching...' : 'Recommend'}

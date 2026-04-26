@@ -109,6 +109,26 @@ def register_routes(app, limiter):
     def rag():
         from services.ir import recommend_games, get_query_dimensions, get_game_dimensions
         from services.query_rewriter import rewrite_query, generate_summary
+        import requests as http_requests
+
+        # Turnstile verification (skipped if TURNSTILE_SECRET_KEY is not set)
+        turnstile_secret = os.getenv("TURNSTILE_SECRET_KEY")
+        if turnstile_secret:
+            token = request.args.get("turnstile_token", "").strip()
+            if not token:
+                return jsonify({"error": "Missing CAPTCHA token"}), 403
+            try:
+                cf = http_requests.post(
+                    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                    data={"secret": turnstile_secret, "response": token,
+                          "remoteip": request.remote_addr},
+                    timeout=5,
+                )
+                if not cf.json().get("success"):
+                    return jsonify({"error": "CAPTCHA verification failed"}), 403
+            except Exception as e:
+                print(f"[turnstile error] {e}")
+                return jsonify({"error": "CAPTCHA verification error"}), 403
 
         store = app.config.get("INDEX_STORE")
         if not store:
