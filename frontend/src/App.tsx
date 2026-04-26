@@ -377,7 +377,7 @@ function App(): JSX.Element {
               onSuccess={(token) => setTurnstileToken(token)}
               onExpire={() => setTurnstileToken(null)}
               onError={() => setTurnstileToken(null)}
-              options={{ appearance: 'interaction-only', size: 'compact' }}
+              options={{ appearance: 'always', size: 'compact' }}
             />
           )}
 
