@@ -7,10 +7,10 @@ from google.genai import types
 
 
 def _call(api_key: str, system: str, user: str) -> str:
-    print(f"[_call] api_key present: {bool(api_key)}, model: gemini-2.0-flash")
+    print(f"[_call] api_key present: {bool(api_key)}, model: gemini-2.5-flash")
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=user,
         config=types.GenerateContentConfig(system_instruction=system),
     )
